@@ -1,0 +1,6 @@
+# dsh-remote-access: local plugin. One row mounts the dual-face plugin — the
+# host half (TLS edge entry, login gate, loopback re-issue proxy) and the
+# browser half (the first-level "Remote Access" section in GUI settings).
+- insert:
+    - id: remote-access
+      name: 'dsh-remote-access'

@@ -1,0 +1,58 @@
+{
+  "name": "dsh-remote-access",
+  "version": "1.0.0",
+  "description": "dsh 远程访问: a TLS edge entry (self-signed cert, login page, session cookies) that transparently proxies to the loopback dsh web GUI",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "remote-access",
+    "reverse-proxy",
+    "tls"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YOUR-GITHUB-USER/dsh-remote-access.git"
+  },
+  "homepage": "https://github.com/YOUR-GITHUB-USER/dsh-remote-access#readme",
+  "bugs": {
+    "url": "https://github.com/YOUR-GITHUB-USER/dsh-remote-access/issues"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "src",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node src/build-client.mjs && cp src/index.js lib/index.js",
+    "build:client": "node src/build-client.mjs",
+    "build:host": "cp src/index.js lib/index.js"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  },
+  "dependencies": {
+    "selfsigned": "^5.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1"
+  }
+}
