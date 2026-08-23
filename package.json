@@ -14,11 +14,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/YOUR-GITHUB-USER/dsh-remote-access.git"
+    "url": "git+https://github.com/zergtant/dsh-remote-access.git"
   },
-  "homepage": "https://github.com/YOUR-GITHUB-USER/dsh-remote-access#readme",
+  "homepage": "https://github.com/zergtant/dsh-remote-access#readme",
   "bugs": {
-    "url": "https://github.com/YOUR-GITHUB-USER/dsh-remote-access/issues"
+    "url": "https://github.com/zergtant/dsh-remote-access/issues"
   },
   "engines": {
     "node": ">=22"
