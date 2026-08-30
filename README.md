@@ -1,5 +1,9 @@
 # dsh-remote-access（dsh 远程访问）
 
+update：dsh-0.1.2-alpha.1 更新了验证流程和API，最新修改已经兼容。
+
+原v1.0 对应[dsh-v0.1.1](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.1-rc.2) 
+
 给 [DeepSeek Harness (dsh)](https://github.com/deepseek-ai/deepseek-harness) 的 web GUI 增加一个**自包含的 TLS 远程入口**：独立端口 + 自签证书 + 登录页 + 会话 cookie，之后透明代理到本机的 dsh web 服务器（默认 `127.0.0.1:3080`）。
 
 > 把只在 `127.0.0.1` 上监听的 dsh GUI，安全地暴露给局域网 / frp 

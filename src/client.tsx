@@ -180,11 +180,17 @@ interface SettingsScopeFace {
 /** The editable fields shared by the draft and the committed snapshot. */
 type FieldSet = { enabled: boolean; tls: boolean; port: number; host: string; username: string }
 
-/** The credentials wire face the controller consumes (structural). */
+/**
+ * The credentials wire face the controller consumes (structural): the 0.1.2
+ * remote-namespace shape (positional requests, ClientResult envelope), not the
+ * 0.1.1 apiproxy envelope.
+ */
 interface CredentialsFace {
-  set: (request: { ref: string; value: string }) => Promise<unknown>
-  describe?: (request: { refs: string[] }) => Promise<{
-    result?: { value?: { credentials?: Record<string, { configured?: boolean }> } }
+  set: (ref: string, value: string) => Promise<void>
+  describe: (refs: string[]) => Promise<{
+    ok: boolean
+    value?: Record<string, { configured?: boolean; writable?: boolean }>
+    error?: unknown
   }>
 }
 
@@ -278,11 +284,12 @@ class CardController {
   }
 
   private async readCredential(): Promise<void> {
-    const describe = this.credentialsApi.describe
-    if (describe === undefined) return
     try {
-      const response = await describe.call(this.credentialsApi, { refs: [CREDENTIAL_REF] })
-      this.passwordConfigured = response?.result?.value?.credentials?.[CREDENTIAL_REF]?.configured ?? false
+      const response = await this.credentialsApi.describe([CREDENTIAL_REF])
+      // A refusal or error leaves the last-known state stale-unknown: the
+      // badge reports unconfigured rather than claiming a password that the
+      // Host may no longer hold.
+      this.passwordConfigured = response.ok ? response.value?.[CREDENTIAL_REF]?.configured ?? false : false
     } catch (_readFailure) {
       // The section stays usable; a write still reaches the Host.
       this.passwordConfigured = false
@@ -349,7 +356,7 @@ class CardController {
       if (before.host !== this.draft.host) await this.scope.set('host', this.draft.host)
       if (before.username !== this.draft.username) await this.scope.set('username', this.draft.username)
       if (this.password.trim().length > 0) {
-        await this.credentialsApi.set({ ref: CREDENTIAL_REF, value: this.password.trim() })
+        await this.credentialsApi.set(CREDENTIAL_REF, this.password.trim())
         this.password = ''
       }
       this.committed = this.committedFromSnapshot()
@@ -562,7 +569,7 @@ function isLoopbackPage(): boolean {
 /**
  * Required services (fiber inject waiting).
  */
-export const inject = ['slots', 'settingsScope', 'connection', 'locale']
+export const inject = ['slots', 'settingsScope', 'locale', 'remote', 'remote.credentials']
 
 /** The structural browser plugin context this apply consumes. */
 interface ClientCtx {
@@ -571,7 +578,7 @@ interface ClientCtx {
     register: (options: Record<string, unknown>, component: unknown) => unknown
   }
   settingsScope: { bind: (spec: { namespace: string }) => SettingsScopeFace }
-  connection: { api: { credentials: CredentialsFace } }
+  remote: { credentials: CredentialsFace }
   locale: {
     register: (ns: string, dictionaries: Record<string, Record<string, string>>) => void
     bind: (ns: string) => (key: string) => string
@@ -584,7 +591,6 @@ interface ClientCtx {
  * @param ctx - the browser plugin context.
  */
 export function apply(ctx: ClientCtx): void {
-  const { api } = ctx.connection
   const t = ctx.locale.bind(DICT_NS)
   ctx.effect(() => ctx.locale.register(DICT_NS, { zh, en }), 'remote-access: dictionaries')
 
@@ -593,7 +599,7 @@ export function apply(ctx: ClientCtx): void {
   // (that is what unlocks the settings plane), so the local/remote split must
   // use the raw page hostname instead — remote sessions are read-only.
   const remote = !isLoopbackPage()
-  const controller = new CardController(scope, api.credentials, remote, (line) => {
+  const controller = new CardController(scope, ctx.remote.credentials, remote, (line) => {
     console.warn(`[dsh-remote-access] ${line}`)
   })
   ctx.effect(() => () => { controller.dispose() }, 'remote-access: section controller')
