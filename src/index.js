@@ -17,7 +17,6 @@ import https from 'node:https'
 import net from 'node:net'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import z from '@deepseek-ai/schemastery'
 
@@ -28,7 +27,7 @@ export const name = 'remote-access'
 export const inject = ['webServer', 'credentials', 'connection']
 
 /** Settings namespace of the remote-access card (the browser half spells the same value). */
-const NS = settingsNamespace('remote-access')
+const NS = 'remote-access'
 
 /** Credential reference holding the login password (POSIX-style name). */
 const PASSWORD_REF = credentialRef('DSH_REMOTE_ACCESS_PASSWORD')
@@ -428,8 +427,9 @@ class EdgeServer {
     if (this.server === null) return
     const server = this.server
     this.server = null
-    await new Promise((resolve) => { server.close(() => resolve()) })
+    const closed = new Promise((resolve) => { server.close(() => resolve()) })
     server.closeAllConnections()
+    await closed
     this.log(`edge stopped (${this.tls ? 'https' : 'http'}://${this.host}:${this.port})`)
   }
 
@@ -718,6 +718,8 @@ class EdgeServer {
       return
     }
     const upstream = net.connect(this.mainPort, '127.0.0.1')
+    this.upgradeSockets.add(socket)
+    this.upgradeSockets.add(upstream)
     const headers = { ...req.headers }
     delete headers.origin
     headers.host = `127.0.0.1:${this.mainPort}`
@@ -735,7 +737,6 @@ class EdgeServer {
       socket.destroy()
     }
     upstream.on('connect', () => {
-      this.upgradeSockets.add(upstream)
       upstream.write(raw, 'utf8')
       if (head?.length > 0) upstream.write(head)
       upstream.pipe(socket)
@@ -743,7 +744,14 @@ class EdgeServer {
     })
     upstream.on('error', () => fail('upstream'))
     socket.on('error', () => fail('client'))
-    upstream.on('close', () => { this.upgradeSockets.delete(upstream) })
+    upstream.on('close', () => {
+      this.upgradeSockets.delete(upstream)
+      socket.destroy()
+    })
+    socket.on('close', () => {
+      this.upgradeSockets.delete(socket)
+      upstream.destroy()
+    })
   }
 }
 
@@ -763,17 +771,19 @@ class EdgeController {
     /** @type {EdgeServer | null} */
     this.edge = null
     this.fingerprint = ''
+    this.pending = Promise.resolve()
+    this.disposed = false
   }
 
   /**
    * @param {{ enabled: boolean, tls: boolean, port: number, host: string, username: string, sessionTtlMs: number, certName: string }} config - the effective config.
    */
-  async sync(config) {
-    try {
-      await this.syncInternal(config)
-    } catch (error) {
+  sync(config) {
+    if (this.disposed) return this.pending
+    this.pending = this.pending.then(() => this.syncInternal(config)).catch((error) => {
       this.log(`edge sync failed: ${error.stack ?? error}`)
-    }
+    })
+    return this.pending
   }
 
   /** @param {Parameters<EdgeController['sync']>[0]} config - the effective config. */
@@ -828,6 +838,8 @@ class EdgeController {
 
   /** Stop the edge at plugin unload. */
   async dispose() {
+    this.disposed = true
+    await this.pending
     if (this.edge !== null) {
       const edge = this.edge
       this.edge = null
@@ -846,13 +858,12 @@ class EdgeController {
 export function apply(ctx, entry) {
   const log = (line) => { ctx.logger.info(`[dsh-remote-access] ${line}`) }
   const controller = new EdgeController({ ctx, log })
-  const source = { thunk: undefined }
-  installSettingsSection(ctx, NS, Config, entry, {
-    setSource: (current) => { source.thunk = current },
-    onChange: () => {
-      const effective = source.thunk !== undefined ? source.thunk() : entry
-      void controller.sync(effective)
-    },
+  const source = { thunk: () => entry }
+  ctx.inject(['settings'], (settingsCtx) => {
+    settingsCtx.settings.installSection(ctx, NS, Config, entry, {
+      setSource: (current) => { source.thunk = current },
+      onChange: () => { void controller.sync(source.thunk()) },
+    })
   })
-  ctx.effect(() => () => { void controller.dispose() }, 'remote-access: edge lifecycle')
+  ctx.effect(() => () => controller.dispose(), 'remote-access: edge lifecycle')
 }

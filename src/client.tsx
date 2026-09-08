@@ -175,6 +175,7 @@ interface SettingsScopeFace {
   }
   subscribe: (listener: () => void) => () => void
   set: (field: string, value: unknown) => Promise<void>
+  mutate: (ops: Array<{ op: 'set'; path: string[]; value: unknown }>) => Promise<void>
 }
 
 /** The editable fields shared by the draft and the committed snapshot. */
@@ -183,10 +184,10 @@ type FieldSet = { enabled: boolean; tls: boolean; port: number; host: string; us
 /**
  * The credentials wire face the controller consumes (structural): the 0.1.2
  * remote-namespace shape (positional requests, ClientResult envelope), not the
- * 0.1.1 apiproxy envelope.
+ * 0.1.1 apiproxy envelope. Writes also return a ClientResult in 0.1.3.
  */
 interface CredentialsFace {
-  set: (ref: string, value: string) => Promise<void>
+  set: (ref: string, value: string) => Promise<{ ok: boolean; error?: unknown }>
   describe: (refs: string[]) => Promise<{
     ok: boolean
     value?: Record<string, { configured?: boolean; writable?: boolean }>
@@ -331,6 +332,9 @@ class CardController {
     this.publish()
     try {
       await this.scope.set('enabled', next)
+      if (this.scope.getSnapshot().value?.enabled !== next) {
+        throw new Error('Host did not accept the enable change')
+      }
     } catch (toggleFailure) {
       this.log(`enable toggle failed: ${String(toggleFailure)}`)
       this.failed = true
@@ -351,12 +355,20 @@ class CardController {
     this.publish()
     try {
       const before = this.committedFromSnapshot()
-      if (before.tls !== this.draft.tls) await this.scope.set('tls', this.draft.tls)
-      if (before.port !== this.draft.port) await this.scope.set('port', this.draft.port)
-      if (before.host !== this.draft.host) await this.scope.set('host', this.draft.host)
-      if (before.username !== this.draft.username) await this.scope.set('username', this.draft.username)
+      const desired = { ...this.draft }
+      const fields = ['tls', 'port', 'host', 'username'] as const
+      const changes = fields.filter(key => before[key] !== desired[key])
+      if (changes.length > 0) {
+        // One revision-fenced commit avoids restarting the edge for each field.
+        await this.scope.mutate(changes.map(key => ({ op: 'set', path: [key], value: desired[key] })))
+        const accepted = this.committedFromSnapshot()
+        if (changes.some(key => accepted[key] !== desired[key])) {
+          throw new Error('Host did not accept the settings change')
+        }
+      }
       if (this.password.trim().length > 0) {
-        await this.credentialsApi.set(CREDENTIAL_REF, this.password.trim())
+        const response = await this.credentialsApi.set(CREDENTIAL_REF, this.password.trim())
+        if (!response.ok) throw new Error('Host rejected the credential write')
         this.password = ''
       }
       this.committed = this.committedFromSnapshot()

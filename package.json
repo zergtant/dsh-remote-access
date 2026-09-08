@@ -38,7 +38,9 @@
   "scripts": {
     "build": "node src/build-client.mjs && cp src/index.js lib/index.js",
     "build:client": "node src/build-client.mjs",
-    "build:host": "cp src/index.js lib/index.js"
+    "build:host": "cp src/index.js lib/index.js",
+    "test": "node --test tests/compat.test.mjs",
+    "test:browser": "node tests/browser-smoke.mjs"
   },
   "dsh": {
     "bundle": {
