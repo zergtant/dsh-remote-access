@@ -52,9 +52,14 @@
     }
   },
   "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.2",
     "selfsigned": "^5.0.0"
   },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-credentials": "^0.1.5-0"
+  },
   "devDependencies": {
+    "@deepseek-ai/dsh-credentials": "^0.1.5-0",
     "esbuild": "^0.28.1"
   }
 }

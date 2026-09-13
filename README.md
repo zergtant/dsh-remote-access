@@ -1,8 +1,10 @@
 # dsh-remote-access（dsh 远程访问）
 
-update：dsh-0.1.2-alpha.1 更新了验证流程和API，最新修改已经兼容。
+update： **dsh 0.1.5** 没有改API这次更新只是修改了一些小问题，所以无需改动 API 适配。唯一修复的是自签证书有效期（见下「安全模型」）。
 
-原v1.0 对应[dsh-v0.1.1](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.1-rc.2) 
+- dsh-0.1.3-alpha.2：验证流程与 API 对齐（登录门禁 + 凭据库 + 设置命名空间）。
+- dsh-0.1.2-alpha.1：更新了验证流程和API，最新修改已经兼容。
+- 原v1.0 对应[dsh-v0.1.1](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.1-rc.2) 
 
 给 [DeepSeek Harness (dsh)](https://github.com/deepseek-ai/deepseek-harness) 的 web GUI 增加一个**自包含的 TLS 远程入口**：独立端口 + 自签证书 + 登录页 + 会话 cookie，之后透明代理到本机的 dsh web 服务器（默认 `127.0.0.1:3080`）。
 
@@ -52,6 +54,10 @@ dsh plugin --profile web remove dsh-remote-access   # 卸载（bundles 登记自
 
 > 安装完都必须**重启 dsh** 生效。插件默认 `enabled: false`，不会自动监听任何端口，需在 GUI 里显式开启。
 
+> **安装时 pnpm 会报一条 peer 提示，这是预期的**：
+> `Issues with peer dependencies found ... missing peer @deepseek-ai/dsh-credentials`。
+> 凭据 seam 由 dsh 安装闭包在 `$DSH_HOME/profiles/node_modules` 提供，不由 profile 自己安装，所以 pnpm 看不见它。装完 `pnpm peers check` 会一直显示这条，插件实际运行正常。本插件把两个 dsh 依赖按 dsh 自己的约定分开声明：`@deepseek-ai/dsh-credentials`（宿主 seam，必须共用宿主实例）放 `peerDependencies`；`@deepseek-ai/schemastery`（运行时校验器，可以自带一份）放 `dependencies`。
+
 ## 使用
 
 1. 重启 dsh 后，打开 GUI：**设置 → 远程访问**
@@ -84,6 +90,8 @@ dsh plugin --profile web remove dsh-remote-access   # 卸载（bundles 登记自
 - **证书**：自签（`localhost`/`127.0.0.1` SAN，10 年有效期，<30 天自动续期）。浏览器会告警；如需消除告警，可把 frp 终结 TLS 或用可信域名证书替换 `~/.dsh/dsh-remote-access/*.pem`。
 - **http 模式（TLS 关闭）**：登录口令与会话 cookie **明文过网**，仅可用于受信任的内网或调试；公网暴露请保持 TLS 开启。
 
+> 证书有效期说明：`selfsigned` 5.x 是重写版本（基于 `@peculiar/x509`），**移除了 v4 的 `days` 选项**，有效期只能通过 `notBeforeDate`/`notAfterDate` 指定，不传时默认 365 天。本插件按绝对时间传 `notAfterDate` 拿到 10 年有效期（该字段在 v4 上同样有效）。如果不修，证书会静默变成 1 年一续——只要 dsh 连续运行超过一年、或恰好在到期 30 天窗口外重启，浏览器就会直接拒绝连接。
+
 > 公网部署建议：配合 frp 的 `tls_enable`、SSH 跳板、或在更外层（frp/nginx/Caddy）再套一层可信证书与 IP 白名单。本插件只负责"TLS + 登录"，不替代网络层防护。
 
 ## 开发
@@ -113,7 +121,6 @@ dsh plugin --profile web remove dsh-remote-access   # 移除依赖 + bundles 登
 - 自签证书会触发浏览器告警（见上"安全模型"）。
 - 会话为内存态，dsh 重启后需重新登录。
 - 单进程单 edge：一个 dsh 实例对应一个 3081；多实例需改端口。
-- **设置面依赖 dsh 构建**：GUI 里的「远程访问」设置页需要 dsh 源码包含 settings-origin 标记支持。在**干净的上游 dsh 全新安装**上，edge 的代理 / 登录 / TLS 全部正常，但 GUI 内改设置可能不落盘（客户端按不可信来源降级）；命令行 / 配置文件方式改 `~/.dsh/settings.yaml` 的 `remote-access` 段不受影响。
 
 ## License
 

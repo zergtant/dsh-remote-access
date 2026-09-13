@@ -146,6 +146,12 @@ const MAX_LOGIN_FAILURES = 8
 const LOGIN_LOCK_MS = 15 * 60 * 1000
 /** Certificates are regenerated this long before expiry. */
 const CERT_RENEW_MARGIN_MS = 30 * 24 * 60 * 60 * 1000
+/**
+ * Requested certificate lifetime. `selfsigned` 5.x dropped the v4 `days`
+ * option and derives `notAfter` from `notAfterDate` (default: one year), so the
+ * lifetime is stated as an absolute date; 4.x understands the same field.
+ */
+const CERT_VALIDITY_MS = 3650 * 24 * 60 * 60 * 1000
 /** Body cap for login posts. */
 const LOGIN_BODY_LIMIT = 8192
 /** The index response is buffered for the marker injection up to this size. */
@@ -225,7 +231,8 @@ async function ensureCertificate(dir, certName, log) {
   const p = await generate(
     [{ name: 'commonName', value: 'dsh-remote-access' }],
     {
-      days: 3650,
+      notBeforeDate: new Date(),
+      notAfterDate: new Date(Date.now() + CERT_VALIDITY_MS),
       keySize: 2048,
       algorithm: 'sha256',
       extensions: [{ name: 'subjectAltName', altNames }],
