@@ -1,14 +1,17 @@
 # dsh-remote-access（dsh 远程访问）
 
-update： **dsh 0.1.5** 没有改API这次更新只是修改了一些小问题，所以无需改动 API 适配。唯一修复的是自签证书有效期（见下「安全模型」）。
+update： **dsh 0.2.1** 改动了插件 API，最新已适配，并且可以让Desktop进行远程访问。
 
+历史版本：
+
+- dsh-0.1.5：未改 API，只修了自签证书有效期（见下「安全模型」）。
 - dsh-0.1.3-alpha.2：验证流程与 API 对齐（登录门禁 + 凭据库 + 设置命名空间）。
 - dsh-0.1.2-alpha.1：更新了验证流程和API，最新修改已经兼容。
 - 原v1.0 对应[dsh-v0.1.1](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.1-rc.2) 
 
 给 [DeepSeek Harness (dsh)](https://github.com/deepseek-ai/deepseek-harness) 的 web GUI 增加一个**自包含的 TLS 远程入口**：独立端口 + 自签证书 + 登录页 + 会话 cookie，之后透明代理到本机的 dsh web 服务器（默认 `127.0.0.1:3080`）。
 
-> 把只在 `127.0.0.1` 上监听的 dsh GUI，安全地暴露给局域网 / frp 
+> 把只在 `127.0.0.1` 上监听的 dsh GUI或者dsh Desktop ，安全地暴露给局域网 / frp 
 
 
 
@@ -25,42 +28,61 @@ update： **dsh 0.1.5** 没有改API这次更新只是修改了一些小问题�
 
 ## 安装
 
-> 前提：已有一个运行中的 dsh web 部署（本插件是它的 profile 插件）。
+> 前提：已有一个运行中的 dsh（桌面应用，或 `dsh web` 起的 Web 部署）。本插件是它的 **profile 插件**，装进哪个 profile 就服务于那个实例。
 
-统一用 dsh 官方命令 **`dsh plugin`** 安装（Linux / macOS / Windows 通吃，无需手改任何 JSON——它自动完成 pnpm 安装，并自动把声明了 `dsh.bundle` 的依赖登记进 profile 的 bundles 层）。前提是机器上有 `dsh` CLI 和 `pnpm`。
+### 方式一：在 GUI 里装（推荐，桌面应用 / Web GUI 通用）
 
-### 方式一：从 GitHub 远程安装（推荐）
+桌面应用和 Web GUI 用的是同一套客户端，界面完全一样：
+
+1. 左侧「**插件**」页 → 右上「**添加插件**」
+2. 在「**安装源**」里填下面之一，点「**安装**」：
+   - **GitHub 仓库**：`github:zergtant/dsh-remote-access`（也可以填 `https://github.com/zergtant/dsh-remote-access`）
+   - **本地源码目录**（绝对路径）：`D:\git\dsh-remote-access`、`/home/you/dsh-remote-access` —— 给已经有这份代码的人用
+3. **完全重启 dsh**：桌面应用 = 退出并重开整个应用；`dsh web` = 重启那个进程
+4. 设置 →「**远程访问**」→ 填密码 → 点「启动」
+
+对话框接受的形式与 `pnpm add` 一致：**包名 / GitHub 地址 / 本地目录路径**。本地路径必须是**绝对路径**（管理器会拒绝相对路径：它不知道你的工作目录，相对路径还会被解析到 profile 里去）。
+
+### 方式二：命令行安装
 
 ```bash
-dsh plugin --profile web add github:zergtant/dsh-remote-access
+dsh plugin --profile web add github:zergtant/dsh-remote-access   # GitHub 源
+dsh plugin --profile web add .                                   # 本地目录（先 cd 进去）
 ```
 
-### 方式二：本地目录安装
+把 `--profile web` 换成 `--profile desktop` 就是装进桌面应用用的 profile。`dsh plugin` 就是 `pnpm add` 的转发 + bundles 登记，所以 `github:` / 本地目录 / 压缩包都行。
 
-```bash
-cd /path/to/dsh-remote-access
-dsh plugin --profile web add .
-```
+> **本地目录安装 = pnpm 的 `link:`**，profile 只拿到一个符号链接，**不会**代装被链接目录的依赖，所以要先在那个目录里跑一次 `pnpm install`（或 `npm install`）。本插件的 `selfsigned`（自签证书）与 `@deepseek-ai/schemastery`（Config 校验器）必须能在插件目录里解析到，否则宿主加载时会报 `failed to import`。GitHub / 压缩包安装不存在这个问题（pnpm 会一并装依赖）。
+>
+> 可能出现的问题：插件导入失败时 dsh 控制台只打印一行 `failed to import`，原因可能是 `$DSH_HOME/logs/startup-*.log`。
+>
+> Windows 上如果 `dsh` 不在 PATH（桌面应用只随包提供 `dsh.cmd`，且没有把它写进 PATH 的入口），用完整路径，例如 `<桌面安装目录>\resources\runtime\cli\bin\dsh.cmd`，或把该 `bin` 目录加进用户 PATH。
 
 ### 方式三：npm 安装
 
 暂不支持
+
 ### 升级 / 卸载
 
 ```bash
-dsh plugin --profile web update dsh-remote-access   # 升级（git 源重新拉取）
+dsh plugin --profile web update dsh-remote-access   # 升级（git 源重新拉取；本地 link 源请直接改代码后重启）
 dsh plugin --profile web remove dsh-remote-access   # 卸载（bundles 登记自动移除）
 ```
+
+GUI 里同样可以卸载：「插件」页 → 找到 `dsh-remote-access` → 卸载。
 
 > 安装完都必须**重启 dsh** 生效。插件默认 `enabled: false`，不会自动监听任何端口，需在 GUI 里显式开启。
 
 > **安装时 pnpm 会报一条 peer 提示，这是预期的**：
 > `Issues with peer dependencies found ... missing peer @deepseek-ai/dsh-credentials`。
 > 凭据 seam 由 dsh 安装闭包在 `$DSH_HOME/profiles/node_modules` 提供，不由 profile 自己安装，所以 pnpm 看不见它。装完 `pnpm peers check` 会一直显示这条，插件实际运行正常。本插件把两个 dsh 依赖按 dsh 自己的约定分开声明：`@deepseek-ai/dsh-credentials`（宿主 seam，必须共用宿主实例）放 `peerDependencies`；`@deepseek-ai/schemastery`（运行时校验器，可以自带一份）放 `dependencies`。
+>
+> 另外，0.2.x 会先做一次**版本兼容预检**：插件 `peerDependencies` 里的 `@deepseek-ai/dsh-*` 范围必须能覆盖当前运行的 dsh 版本，否则 `dsh plugin add`（GUI 的「安装」按钮同理）会直接拒绝安装（可用 `dsh plugin allow-version ... --accept-risk` 强行放行，但不建议）。本插件声明的是 `^0.2.1-alpha.1`。
 
 ## 使用
 
-1. 重启 dsh 后，打开 GUI：**设置 → 远程访问**
+1. 装完**重启 dsh**（桌面端 = 重开整个应用；`dsh web` = 重启进程），然后打开 GUI：**设置 → 远程访问**
+   （桌面应用里这张卡片同样可编辑——它是"本机窗口"，不算远程页）
 2. 设置**密码**（必填，公网暴露时的唯一口令）、用户名（默认 `admin`）
 3. 点页面顶部的**「启动」**按钮（即时生效，不用点保存）→ 立即在 `0.0.0.0:3081` 监听，按钮旁显示"运行中 · https://…"
 4. 访问：
@@ -90,8 +112,6 @@ dsh plugin --profile web remove dsh-remote-access   # 卸载（bundles 登记自
 - **证书**：自签（`localhost`/`127.0.0.1` SAN，10 年有效期，<30 天自动续期）。浏览器会告警；如需消除告警，可把 frp 终结 TLS 或用可信域名证书替换 `~/.dsh/dsh-remote-access/*.pem`。
 - **http 模式（TLS 关闭）**：登录口令与会话 cookie **明文过网**，仅可用于受信任的内网或调试；公网暴露请保持 TLS 开启。
 
-> 证书有效期说明：`selfsigned` 5.x 是重写版本（基于 `@peculiar/x509`），**移除了 v4 的 `days` 选项**，有效期只能通过 `notBeforeDate`/`notAfterDate` 指定，不传时默认 365 天。本插件按绝对时间传 `notAfterDate` 拿到 10 年有效期（该字段在 v4 上同样有效）。如果不修，证书会静默变成 1 年一续——只要 dsh 连续运行超过一年、或恰好在到期 30 天窗口外重启，浏览器就会直接拒绝连接。
-
 > 公网部署建议：配合 frp 的 `tls_enable`、SSH 跳板、或在更外层（frp/nginx/Caddy）再套一层可信证书与 IP 白名单。本插件只负责"TLS + 登录"，不替代网络层防护。
 
 ## 开发
@@ -104,23 +124,38 @@ npm run build:client   # src/client.tsx → lib/client.js
 npm run build:host     # src/index.js → lib/index.js
 # 或一次全构建
 npm run build
+# 静态兼容性自检（不需要 dsh 或浏览器）
+npm test。
 ```
 
-`lib/` 已随仓库提交（可直接安装）；`src/` 是源。
+本地调试（debug profile）
+
+```bash
+dsh --profile debug --from-default-profile web   # 建一个独立 profile
+dsh plugin --profile debug add /path/to/dsh-remote-access
+dsh --profile debug --port 3099 --no-open        # 换端口，避免和现有实例冲突
+```
+
+设置卡片写入的是 `$DSH_HOME/profiles/debug/cordis.patch.yml`（用户层），宿主端 `Config` 的 volatile 字段由它落盘。
 
 ## 卸载
+
+两种方式任选：GUI「插件」页里找到 `dsh-remote-access` → 卸载；或命令行：
 
 ```bash
 dsh plugin --profile web remove dsh-remote-access   # 移除依赖 + bundles 登记，并 pnpm install
 ```
 
-然后重启 dsh；可选删除残留：`~/.dsh/dsh-remote-access/`（自签证书）与凭据库里的 `DSH_REMOTE_ACCESS_PASSWORD`（`~/.dsh/.credentials.yaml`）。
+装到桌面应用就换成 `--profile desktop`。然后重启 dsh；可选删除残留：`~/.dsh/dsh-remote-access/`（自签证书）与凭据库里的 `DSH_REMOTE_ACCESS_PASSWORD`（`~/.dsh/.credentials.yaml`，建议先在卡片里停用再卸载）。
 
 ## 已知限制
 
 - 自签证书会触发浏览器告警（见上"安全模型"）。
 - 会话为内存态，dsh 重启后需重新登录。
-- 单进程单 edge：一个 dsh 实例对应一个 3081；多实例需改端口。
+- 单进程单 edge：一个 dsh 实例对应一个 3081；本地要跑多实例要自行修改端口。
+- **远程页面只读自己的卡片**：从 edge 打开的页面里「远程访问」卡片不可编辑（改了会断掉当前连接），要改配置请回到本机 GUI：web 端的 `127.0.0.1` 或桌面端窗口本身（两者都算本地）。
+- **桌面端（dsh desktop）**：桌面应用就是"桌面 profile + Electron 外壳"，web 服务绑随机回环端口，宿主半边与 web 端是同一套代码；「插件 → 添加插件」安装已实测可用。浏览器半边的本地/远程判别按桌面端窗口（`dsh-app://app/`）口径对齐，桌面窗口里这张卡片保持可编辑。
+- edge 监听失败（例如端口被占）只写日志，卡片状态行仍按配置显示"运行中"——状态行反映的是配置，不是监听结果。
 
 ## License
 

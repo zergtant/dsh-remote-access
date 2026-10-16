@@ -1,55 +1,51 @@
 /**
- * Build the browser half into the dsh client-bundle format:
- * a CJS bundle (react + react/jsx-runtime externalized to the platform seed
- * table) wrapped in window.__ModuleLoader__.load({id, factory}).
+ * Build the browser half into the dsh client-bundle format: a CJS bundle
+ * (react + react/jsx-runtime externalized to the platform seed table) wrapped
+ * in window.__ModuleLoader__.load({id, factory}).
  *
- * esbuild resolution order:
- *   1. local node_modules/.bin/esbuild (after `npm install`)
- *   2. a DSH_EBUILD env override (absolute path to a binary)
- *   3. the deepseek-harness monorepo esbuild (development fallback)
+ * esbuild is used through its JavaScript API so the platform binary is located
+ * by the package itself — a bare `.bin/esbuild` shim is a shell script on
+ * Windows and cannot be executed directly.
  */
-import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
 
-function findEsbuild() {
-  const candidates = [
-    join(root, 'node_modules', '.bin', 'esbuild'),
-    process.env.DSH_ESBUILD,
-    '/home/user/deepseek-harness/node_modules/.pnpm/node_modules/.bin/esbuild',
-  ].filter(Boolean)
-  const hit = candidates.find((p) => existsSync(p))
-  if (!hit) {
+/** Load the local devDependency, with a diagnostic that names the fix. */
+async function loadEsbuild() {
+  // esbuild's Node API has no per-call binary option; this is its supported
+  // override for an offline or vendored setup.
+  const override = process.env.DSH_ESBUILD
+  if (override !== undefined && override !== '') process.env.ESBUILD_BINARY_PATH = override
+  try {
+    return await import('esbuild')
+  } catch (error) {
     throw new Error(
-      'esbuild not found. Run `npm install` first (adds esbuild as a devDependency), ' +
-        'or set DSH_ESBUILD to an esbuild binary path.',
+      'esbuild is not installed. Run `npm install` (or `pnpm install`) in this package first, '
+      + `or set DSH_ESBUILD to an esbuild binary path. (${error.message})`,
     )
   }
-  return hit
 }
 
-const esbuild = findEsbuild()
+const esbuild = await loadEsbuild()
 const tmp = join(root, 'lib', 'client.raw.cjs')
 mkdirSync(join(root, 'lib'), { recursive: true })
 rmSync(tmp, { force: true })
 
-execFileSync(esbuild, [
-  join(here, 'client.tsx'),
-  '--bundle',
-  '--format=cjs',
-  '--platform=browser',
-  '--target=es2020',
-  '--jsx=automatic',
-  '--external:react',
-  '--external:react/jsx-runtime',
-  '--external:react-dom',
-  '--external:react-dom/client',
-  `--outfile=${tmp}`,
-], { stdio: 'inherit' })
+await esbuild.build({
+  entryPoints: [join(here, 'client.tsx')],
+  bundle: true,
+  format: 'cjs',
+  platform: 'browser',
+  target: 'es2020',
+  jsx: 'automatic',
+  external: ['react', 'react/jsx-runtime', 'react-dom', 'react-dom/client'],
+  outfile: tmp,
+  logLevel: 'info',
+})
 
 const body = readFileSync(tmp, 'utf8')
 rmSync(tmp)

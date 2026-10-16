@@ -1,6 +1,6 @@
 {
   "name": "dsh-remote-access",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "dsh 远程访问: a TLS edge entry (self-signed cert, login page, session cookies) that transparently proxies to the loopback dsh web GUI",
   "type": "module",
   "license": "MIT",
@@ -36,11 +36,10 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "node src/build-client.mjs && cp src/index.js lib/index.js",
+    "build": "node src/build-client.mjs && node src/build-host.mjs",
     "build:client": "node src/build-client.mjs",
-    "build:host": "cp src/index.js lib/index.js",
-    "test": "node --test tests/compat.test.mjs",
-    "test:browser": "node tests/browser-smoke.mjs"
+    "build:host": "node src/build-host.mjs",
+    "test": "node --test tests/compat.test.mjs"
   },
   "dsh": {
     "bundle": {
@@ -56,10 +55,10 @@
     "selfsigned": "^5.0.0"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-credentials": "^0.1.5-0"
+    "@deepseek-ai/dsh-credentials": "^0.2.1-alpha.1"
   },
   "devDependencies": {
-    "@deepseek-ai/dsh-credentials": "^0.1.5-0",
+    "@deepseek-ai/dsh-credentials": "^0.2.1-alpha.1",
     "esbuild": "^0.28.1"
   }
 }

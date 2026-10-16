@@ -1,13 +1,25 @@
 /**
- * dsh remote access — browser half.
+ * dsh remote access — browser half (dsh 0.2.x).
  *
  * Mounts a first-level settings section ("远程访问") next to 通用设置/模型/插件,
- * and routes a gated 401 to the login page. No non-baseline module requests:
- * react + react/jsx-runtime resolve from the platform seed table, and the
- * reactive state is a local snapshot source.
+ * and routes a gated 401 to the login page.
+ *
+ * 0.2.x contract notes:
+ * - The removed `ctx.settingsScope` is replaced by `ctx.configForms`: one shared
+ *   config form per Host profile entry, addressed by the entry id that also
+ *   names the settings namespace (`remote-access`, the id of this plugin's patch
+ *   row). The form carries the values, the namespace revision, the write queue,
+ *   and the local/remote persistence decision, so nothing here re-implements
+ *   describe/fence/recovery.
+ * - `ctx.configForms.whileServed([NS], ...)` keeps the section registered only
+ *   while the Host actually serves the namespace, so a deployment without the
+ *   settings provider shows no trace of the page.
+ * - Credentials read and write through `ctx.remote.credentials`, whose answers
+ *   arrive in the Remote result envelope (`{ ok, value }`); the literal never
+ *   rides a response.
  */
 
-/** Settings namespace the section edits (the host half spells the same value). */
+/** Settings namespace / profile entry id (the host half's patch row spells the same value). */
 const NS = 'remote-access'
 
 /** Credential reference holding the login password. */
@@ -83,6 +95,54 @@ const en = {
   remoteReadOnly: 'Read-only while remote: changing settings drops this session — make changes in the local GUI on 127.0.0.1',
 } as const
 
+/** One path edit, as the shared config form's `mutate` accepts it. */
+interface PathOp {
+  op: 'set' | 'unset'
+  path: string[]
+  value?: unknown
+}
+
+/**
+ * The shared config form this section stages over — `ctx.configForms.get(NS)`,
+ * structurally (no cross-plugin value import).
+ */
+interface SettingsFormFace {
+  getSnapshot: () => {
+    status: 'loading' | 'ready' | 'unavailable'
+    value?: { enabled?: boolean; tls?: boolean; port?: number; host?: string; username?: string }
+    writable: boolean
+    revision?: number
+  }
+  subscribe: (listener: () => void) => () => void
+  set: (field: string, value: unknown) => Promise<boolean>
+  mutate: (ops: PathOp[], expectedRevision?: number) => Promise<boolean>
+}
+
+/**
+ * The credentials wire face: `ctx.remote.credentials`. Answers may arrive in
+ * the Remote envelope (`{ ok, value | error }`); both shapes are accepted so a
+ * refusal is reported as unconfigured instead of throwing.
+ */
+interface CredentialsFace {
+  set: (ref: string, value: string) => Promise<unknown>
+  describe: (refs: string[]) => Promise<unknown>
+}
+
+/** Unwrap one Remote result envelope, or pass a plain value through. */
+function remoteValue<T>(response: unknown): T | undefined {
+  if (response === null || typeof response !== 'object') return undefined
+  const envelope = response as { ok?: unknown; value?: unknown }
+  if (typeof envelope.ok === 'boolean') return envelope.ok ? envelope.value as T : undefined
+  return response as T
+}
+
+/** Whether one credential write was accepted (the envelope may be absent). */
+function remoteAccepted(response: unknown): boolean {
+  if (response === null || typeof response !== 'object') return true
+  const envelope = response as { ok?: unknown }
+  return typeof envelope.ok === 'boolean' ? envelope.ok : true
+}
+
 /** The section's snapshot (the hook-compartment observable). */
 interface RemoteAccessState {
   /** Whether the Host serves the namespace at all. */
@@ -90,10 +150,10 @@ interface RemoteAccessState {
   /** Whether the Host document accepts writes. */
   writable: boolean
   /**
-   * Whether this page is a remote edge session (non-loopback origin). Remote
-   * sessions are read-only: committing a change would drop the very
-   * connection serving the page. Derived from the raw page hostname, because
-   * the edge bootstrap pins `connection.isLoopback` to true on remote pages.
+   * Whether this document was served by the plugin's edge. Remote sessions are
+   * read-only: committing a change would drop the very connection serving the
+   * page. Taken from the marker the edge injects, not from the page hostname —
+   * see {@link isEdgePage}.
    */
   remote: boolean
   /** Whether a save is crossing the wire. */
@@ -166,37 +226,17 @@ function parsePort(text: string): number | undefined {
   return value >= 1 && value <= 65535 ? value : undefined
 }
 
-/** The settings-scope face the controller consumes (structural). */
-interface SettingsScopeFace {
-  getSnapshot: () => {
-    status: string
-    value?: { enabled?: boolean; tls?: boolean; port?: number; host?: string; username?: string }
-    writable: boolean
-  }
-  subscribe: (listener: () => void) => () => void
-  set: (field: string, value: unknown) => Promise<void>
-  mutate: (ops: Array<{ op: 'set'; path: string[]; value: unknown }>) => Promise<void>
-}
-
 /** The editable fields shared by the draft and the committed snapshot. */
 type FieldSet = { enabled: boolean; tls: boolean; port: number; host: string; username: string }
 
-/**
- * The credentials wire face the controller consumes (structural): the 0.1.2
- * remote-namespace shape (positional requests, ClientResult envelope), not the
- * 0.1.1 apiproxy envelope. Writes also return a ClientResult in 0.1.3.
- */
-interface CredentialsFace {
-  set: (ref: string, value: string) => Promise<{ ok: boolean; error?: unknown }>
-  describe: (refs: string[]) => Promise<{
-    ok: boolean
-    value?: Record<string, { configured?: boolean; writable?: boolean }>
-    error?: unknown
-  }>
-}
+/** The config field defaults, matching the host Config schema. */
+const FIELD_DEFAULTS: FieldSet = { enabled: false, tls: true, port: 3081, host: '0.0.0.0', username: 'admin' }
+
+/** The fields a save writes (the enable switch commits itself). */
+const SAVED_FIELDS = ['tls', 'port', 'host', 'username'] as const
 
 /**
- * Bridges the settings scope and the credentials wire onto the section state.
+ * Bridges the shared config form and the credentials wire onto the section state.
  */
 class CardController {
   private readonly source: ReturnType<typeof createSnapshotSource>
@@ -212,13 +252,13 @@ class CardController {
   private readonly unsubscribeScope: () => void
 
   /**
-   * @param scope - the bound settings scope for the `remote-access` namespace.
+   * @param scope - the shared config form for the `remote-access` entry.
    * @param credentialsApi - the credentials wire face.
    * @param remote - whether the page is a remote edge session (read-only).
    * @param log - diagnostic sink.
    */
   constructor(
-    private readonly scope: SettingsScopeFace,
+    private readonly scope: SettingsFormFace,
     private readonly credentialsApi: CredentialsFace,
     private readonly remote: boolean,
     private readonly log: (line: string) => void,
@@ -243,11 +283,11 @@ class CardController {
   private committedFromSnapshot(): FieldSet {
     const value = this.scope.getSnapshot().value ?? {}
     return {
-      enabled: value.enabled ?? false,
-      tls: value.tls ?? true,
-      port: value.port ?? 3081,
-      host: value.host ?? '0.0.0.0',
-      username: value.username ?? 'admin',
+      enabled: value.enabled ?? FIELD_DEFAULTS.enabled,
+      tls: value.tls ?? FIELD_DEFAULTS.tls,
+      port: value.port ?? FIELD_DEFAULTS.port,
+      host: value.host ?? FIELD_DEFAULTS.host,
+      username: value.username ?? FIELD_DEFAULTS.username,
     }
   }
 
@@ -255,7 +295,7 @@ class CardController {
     const snapshot = this.scope.getSnapshot()
     const portValid = parsePort(String(this.draft.port)) !== undefined
     return {
-      available: snapshot.status !== 'unavailable',
+      available: snapshot.status === 'ready',
       writable: snapshot.writable,
       saving: this.saving,
       failed: this.failed,
@@ -287,10 +327,11 @@ class CardController {
   private async readCredential(): Promise<void> {
     try {
       const response = await this.credentialsApi.describe([CREDENTIAL_REF])
+      const views = remoteValue<Record<string, { configured?: boolean }>>(response)
       // A refusal or error leaves the last-known state stale-unknown: the
       // badge reports unconfigured rather than claiming a password that the
       // Host may no longer hold.
-      this.passwordConfigured = response.ok ? response.value?.[CREDENTIAL_REF]?.configured ?? false : false
+      this.passwordConfigured = views?.[CREDENTIAL_REF]?.configured ?? false
     } catch (_readFailure) {
       // The section stays usable; a write still reaches the Host.
       this.passwordConfigured = false
@@ -331,8 +372,8 @@ class CardController {
     this.failed = false
     this.publish()
     try {
-      await this.scope.set('enabled', next)
-      if (this.scope.getSnapshot().value?.enabled !== next) {
+      const accepted = await this.scope.set('enabled', next)
+      if (!accepted || this.scope.getSnapshot().value?.enabled !== next) {
         throw new Error('Host did not accept the enable change')
       }
     } catch (toggleFailure) {
@@ -356,23 +397,22 @@ class CardController {
     try {
       const before = this.committedFromSnapshot()
       const desired = { ...this.draft }
-      const fields = ['tls', 'port', 'host', 'username'] as const
-      const changes = fields.filter(key => before[key] !== desired[key])
+      const changes = SAVED_FIELDS.filter(key => before[key] !== desired[key])
       if (changes.length > 0) {
         // One revision-fenced commit avoids restarting the edge for each field.
-        await this.scope.mutate(changes.map(key => ({ op: 'set', path: [key], value: desired[key] })))
-        const accepted = this.committedFromSnapshot()
-        if (changes.some(key => accepted[key] !== desired[key])) {
+        const accepted = await this.scope.mutate(changes.map(key => ({ op: 'set' as const, path: [key], value: desired[key] })))
+        const committed = this.committedFromSnapshot()
+        if (!accepted || changes.some(key => committed[key] !== desired[key])) {
           throw new Error('Host did not accept the settings change')
         }
       }
       if (this.password.trim().length > 0) {
         const response = await this.credentialsApi.set(CREDENTIAL_REF, this.password.trim())
-        if (!response.ok) throw new Error('Host rejected the credential write')
+        if (!remoteAccepted(response)) throw new Error('Host rejected the credential write')
         this.password = ''
       }
       this.committed = this.committedFromSnapshot()
-      for (const key of ['tls', 'port', 'host', 'username'] as const) this.draft[key] = this.committed[key]
+      for (const key of SAVED_FIELDS) this.draft[key] = this.committed[key]
       await this.readCredential()
     } catch (writeFailure) {
       this.log(`save failed: ${String(writeFailure)}`)
@@ -567,21 +607,33 @@ const RA_PAGE_STYLES = `
 `
 
 /**
- * Whether this page is a local GUI (raw `location.hostname` check). This is
- * the only trustworthy local/remote signal in the browser: the edge
- * bootstrap pins `connection.isLoopback` to true on remote pages so the
- * settings plane works over the tunnel, so the connection service cannot be
- * used to tell the two apart.
+ * Whether this document was served by this plugin's edge — the only
+ * trustworthy local/remote signal. A page hostname cannot answer it: the
+ * desktop shell serves its own local window from `dsh-app://app/` (hostname
+ * `app`, no loopback spelling), while the edge is remote whatever authority it
+ * is reached by. The edge marks every document it serves from `<head>`, before
+ * any client entry activates, so the marker is present exactly on remote pages.
+ *
+ * A missing marker therefore reads as LOCAL, which is the safe direction: a
+ * false "local" only re-enables a card the user could reach anyway on that
+ * machine, while a false "remote" would leave the desktop app unable to
+ * configure the plugin at all.
+ *
+ * `connection.isLoopback` is deliberately not consulted: the trust bootstrap
+ * pins it (and with it the settings plane's persistence mode) to true on remote
+ * pages, so the connection service cannot tell the two apart.
  */
-function isLoopbackPage(): boolean {
-  const host = (globalThis as { location?: { hostname?: string } }).location?.hostname
-  return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]'
+function isEdgePage(): boolean {
+  return (globalThis as { __DSH_REMOTE_ACCESS_EDGE__?: unknown }).__DSH_REMOTE_ACCESS_EDGE__ === true
 }
 
 /**
- * Required services (fiber inject waiting).
+ * Required services (fiber inject waiting). `configForms` is deliberately NOT
+ * here: the settings section needs it, but the gated-401 redirect below does
+ * not, so a deployment without the settings domain still gets the edge's login
+ * behavior instead of a client entry that never activates.
  */
-export const inject = ['slots', 'settingsScope', 'locale', 'remote', 'remote.credentials']
+export const inject = ['slots', 'locale', 'remote', 'remote.credentials']
 
 /** The structural browser plugin context this apply consumes. */
 interface ClientCtx {
@@ -589,12 +641,16 @@ interface ClientCtx {
     inject: (name: string, registration: () => void | Iterable<unknown>) => void
     register: (options: Record<string, unknown>, component: unknown) => unknown
   }
-  settingsScope: { bind: (spec: { namespace: string }) => SettingsScopeFace }
+  configForms: {
+    get: (entryId: string) => SettingsFormFace
+    whileServed: (namespaces: readonly string[], register: (served: ReadonlySet<string>) => () => void) => () => void
+  }
   remote: { credentials: CredentialsFace }
   locale: {
     register: (ns: string, dictionaries: Record<string, Record<string, string>>) => void
     bind: (ns: string) => (key: string) => string
   }
+  inject: (services: string[], callback: (scope: ClientCtx) => void) => void
   effect: (setup: () => unknown, label?: string) => void
 }
 
@@ -606,33 +662,10 @@ export function apply(ctx: ClientCtx): void {
   const t = ctx.locale.bind(DICT_NS)
   ctx.effect(() => ctx.locale.register(DICT_NS, { zh, en }), 'remote-access: dictionaries')
 
-  const scope = ctx.settingsScope.bind({ namespace: NS })
-  // The edge bootstrap pins `connection.isLoopback` to true on remote pages
-  // (that is what unlocks the settings plane), so the local/remote split must
-  // use the raw page hostname instead — remote sessions are read-only.
-  const remote = !isLoopbackPage()
-  const controller = new CardController(scope, ctx.remote.credentials, remote, (line) => {
-    console.warn(`[dsh-remote-access] ${line}`)
-  })
-  ctx.effect(() => () => { controller.dispose() }, 'remote-access: section controller')
-
-  ctx.slots.inject('settings.section', () => {
-    ctx.slots.register(
-      {
-        name: 'settings.section',
-        id: 'remote-access',
-        order: SECTION_ORDER,
-        label: () => t('nav'),
-        locale: DICT_NS,
-        inject: () => controller.inject(),
-      },
-      RemoteAccessSection,
-    )
-  })
-
   // A gated 401 (session expired, or a first paint without a cookie) lands on the login page.
+  // Only an edge-served document has that page at all.
   ctx.effect(() => {
-    if (typeof window === 'undefined' || isLoopbackPage()) return
+    if (typeof window === 'undefined' || !isEdgePage()) return
     const originalFetch = window.fetch
     const wrapped = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> =>
       originalFetch(input, init).then((response) => {
@@ -647,4 +680,35 @@ export function apply(ctx: ClientCtx): void {
     window.fetch = wrapped
     return () => { window.fetch = originalFetch }
   }, 'remote-access: gated 401 redirect')
+
+  // The settings domain may be absent from a stripped composition; the section
+  // is optional, so it waits for the service instead of holding the entry back.
+  ctx.inject(['configForms'], (settingsCtx) => {
+    const scope = settingsCtx.configForms.get(NS)
+    // Remote sessions are read-only: committing a change would drop the very
+    // connection serving the page. The edge marks its documents; every other
+    // window (the loopback GUI, the desktop shell's `dsh-app://app/`) is local.
+    const remote = isEdgePage()
+    const controller = new CardController(scope, settingsCtx.remote.credentials, remote, (line) => {
+      console.warn(`[dsh-remote-access] ${line}`)
+    })
+    settingsCtx.effect(() => () => { controller.dispose() }, 'remote-access: section controller')
+
+    // The namespace exists only once the Host serves it (the settings provider
+    // is composed), so the section follows the describe mirror instead of
+    // assuming it.
+    settingsCtx.effect(() => settingsCtx.configForms.whileServed([NS], () => settingsCtx.slots.inject('settings.section', () => {
+      settingsCtx.slots.register(
+        {
+          name: 'settings.section',
+          id: 'remote-access',
+          order: SECTION_ORDER,
+          label: () => t('nav'),
+          locale: DICT_NS,
+          inject: () => controller.inject(),
+        },
+        RemoteAccessSection,
+      )
+    })), 'remote-access: settings section')
+  })
 }
